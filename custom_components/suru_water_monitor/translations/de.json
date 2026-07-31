@@ -38,6 +38,7 @@
     "sensor": {
       "meter_reading": { "name": "Zaehlerstand" },
       "consumption_today": { "name": "Verbrauch heute" },
+      "consumption_current_hour": { "name": "Verbrauch aktuelle Stunde" },
       "water_hardness": { "name": "Wasserhaerte" },
       "ph_value": { "name": "pH-Wert" },
       "last_measured": { "name": "Zuletzt gemessen" }

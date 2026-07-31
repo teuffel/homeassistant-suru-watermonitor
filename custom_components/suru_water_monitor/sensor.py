@@ -38,6 +38,26 @@ def _measured_at(d: dict):
     return dt_util.parse_datetime(ts) if ts else None
 
 
+def _consumption_current_hour(d: dict) -> float | None:
+    """Hourly bucket (L) for the current hour.
+
+    The API anchors value[i] to startDate + i hours, so the index of the
+    current hour is derived from the echoed startDate, not the wall clock.
+    """
+    consumption = d.get("consumption") or {}
+    values = consumption.get("values") or []
+    start = dt_util.parse_datetime(consumption.get("startDate"))
+    if not start or not values:
+        return None
+    now = dt_util.now()
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=now.tzinfo)
+    idx = int((now - start).total_seconds() // 3600)
+    if idx < 0 or idx >= len(values):
+        return None
+    return values[idx]
+
+
 def _water_props(d: dict) -> dict:
     return (d.get("detail") or {}).get("waterProperties") or {}
 
@@ -59,6 +79,14 @@ SENSORS: tuple[SuruSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:water",
         value_fn=lambda d: d.get("consumption_today_l"),
+    ),
+    SuruSensorDescription(
+        key="consumption_current_hour",
+        translation_key="consumption_current_hour",
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:water",
+        value_fn=_consumption_current_hour,
     ),
     SuruSensorDescription(
         key="water_hardness",

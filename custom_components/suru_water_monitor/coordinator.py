@@ -48,6 +48,7 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                 data[unit_id] = {
                     "detail": detail,
                     "reading": reading,
+                    "consumption": consumption,
                     "consumption_today_l": float(sum(values)) if values else None,
                     "incidents": incidents,
                 }
