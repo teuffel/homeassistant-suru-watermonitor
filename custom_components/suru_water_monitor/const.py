@@ -16,3 +16,6 @@ CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL_MINUTES = 60
 MIN_SCAN_INTERVAL_MINUTES = 5
 MAX_SCAN_INTERVAL_MINUTES = 1440
+
+# Days of hourly consumption backfilled into the statistics on first run.
+HISTORY_DAYS = 30
