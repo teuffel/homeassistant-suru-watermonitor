@@ -2,6 +2,7 @@
 import json
 import pathlib
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -39,11 +40,16 @@ class _FakeResp:
     async def __aexit__(self, *exc):
         return False
 
-    async def json(self, content_type=None):
-        return json.loads(self._text)
-
     async def text(self):
         return self._text
+
+
+class _TimeoutResp:
+    async def __aenter__(self):
+        raise TimeoutError
+
+    async def __aexit__(self, *exc):
+        return False
 
 
 class FakeSession:
@@ -86,11 +92,14 @@ async def test_reading_and_consumption():
     session.queue("GET", payload={"values": [1, 2, None], "range": "day", "groupBy": "hour"})
     api = SuruWaterApi(session, "u@example.com", "pw")
     reading = await api.async_get_reading("1")
-    consumption = await api.async_get_consumption("1", "day")
+    local_midnight = datetime(2026, 1, 15, tzinfo=timezone(timedelta(hours=1)))
+    consumption = await api.async_get_consumption("1", local_midnight)
     assert reading["reading"] == 0.014
     assert consumption["values"] == [1, 2, None]
     # reading must send the mandatory `date` query param
     assert any(c[0] == "GET" and c[2] and "date" in c[2] for c in session.calls)
+    # local midnight (CET) is sent as UTC
+    assert session.calls[-1][2]["startDate"] == "2026-01-14T23:00:00Z"
 
 
 async def test_invalid_credentials_raise_auth_error():
@@ -126,3 +135,44 @@ async def test_token_reuse_then_relogin_on_expiry():
     assert api._access_token == "ACCESS-2"
     # exactly two logins (4 POSTs) happened
     assert sum(1 for c in session.calls if c[0] == "POST") == 4
+
+
+async def test_401_relogins_once_and_retries():
+    session = FakeSession()
+    session.login("ACCESS-1").queue("GET", status=401, text="")
+    session.login("ACCESS-2").queue("GET", payload={"units": [{"id": "1"}]})
+    api = SuruWaterApi(session, "u@example.com", "pw")
+    assert await api.async_get_units() == [{"id": "1"}]
+    assert api._access_token == "ACCESS-2"
+
+
+async def test_401_after_relogin_raises_auth_error():
+    session = FakeSession()
+    session.login().queue("GET", status=401, text="")
+    session.login().queue("GET", status=401, text="")
+    api = SuruWaterApi(session, "u@example.com", "pw")
+    with pytest.raises(SuruAuthError):
+        await api.async_get_units()
+
+
+async def test_non_json_responses_raise_api_error():
+    session = FakeSession()
+    session.queue("POST", status=502, text="<html>Bad Gateway</html>")
+    api = SuruWaterApi(session, "u@example.com", "pw")
+    with pytest.raises(SuruApiError):
+        await api.async_get_units()
+
+    session = FakeSession()
+    session.login().queue("GET", status=200, text="<html>oops</html>")
+    api = SuruWaterApi(session, "u@example.com", "pw")
+    with pytest.raises(SuruApiError):
+        await api.async_get_units()
+
+
+async def test_timeout_raises_api_error():
+    session = FakeSession()
+    session.login()
+    session._queues["GET"].append(_TimeoutResp())
+    api = SuruWaterApi(session, "u@example.com", "pw")
+    with pytest.raises(SuruApiError):
+        await api.async_get_units()

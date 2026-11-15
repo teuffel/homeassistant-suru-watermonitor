@@ -17,7 +17,8 @@
     },
     "error": {
       "invalid_auth": "Invalid e-mail or password",
-      "cannot_connect": "Failed to connect to the SURU service"
+      "cannot_connect": "Failed to connect to the SURU service",
+      "unknown": "Unexpected error"
     },
     "abort": {
       "already_configured": "This account is already configured",

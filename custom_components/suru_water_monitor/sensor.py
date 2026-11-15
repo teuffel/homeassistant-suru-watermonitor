@@ -55,8 +55,9 @@ SENSORS: tuple[SuruSensorDescription, ...] = (
     SuruSensorDescription(
         key="consumption_today",
         translation_key="consumption_today",
+        device_class=SensorDeviceClass.WATER,
         native_unit_of_measurement=UnitOfVolume.LITERS,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:water",
         value_fn=lambda d: d.get("consumption_today_l"),
     ),

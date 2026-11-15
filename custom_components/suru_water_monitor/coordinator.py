@@ -7,6 +7,7 @@ from datetime import timedelta
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import SuruApiError, SuruAuthError, SuruWaterApi
 from .const import DOMAIN
@@ -35,7 +36,9 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                     continue
                 detail = await self.api.async_get_unit(unit_id)
                 reading = await self.api.async_get_reading(unit_id)
-                consumption = await self.api.async_get_consumption(unit_id, "day")
+                consumption = await self.api.async_get_consumption(
+                    unit_id, dt_util.start_of_local_day()
+                )
                 values = [v for v in (consumption.get("values") or []) if v is not None]
 
                 devices = detail.get("devices") or []

@@ -25,6 +25,7 @@ except ImportError:  # standalone import (recon test)
     from const import API_BASE, COGNITO_CLIENT_ID, COGNITO_IDP_URL, COGNITO_POOL_ID
 
 _AMZ_JSON = "application/x-amz-json-1.1"
+_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 class SuruError(Exception):
@@ -60,18 +61,25 @@ class SuruWaterApi:
                     "Content-Type": _AMZ_JSON,
                     "X-Amz-Target": f"AWSCognitoIdentityProviderService.{target}",
                 },
+                timeout=_TIMEOUT,
             ) as resp:
-                payload = await resp.json(content_type=None)
-                if resp.status != 200:
-                    err_type = (payload or {}).get("__type", "")
-                    msg = (payload or {}).get("message", str(payload))
-                    if any(t in err_type for t in
-                           ("NotAuthorized", "UserNotFound", "InvalidParameter")):
-                        raise SuruAuthError(f"{err_type}: {msg}")
-                    raise SuruApiError(f"{err_type}: {msg}")
-                return payload
-        except aiohttp.ClientError as err:
-            raise SuruApiError(f"Cognito request failed: {err}") from err
+                status, text = resp.status, await resp.text()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise SuruApiError(f"Cognito request failed: {err!r}") from err
+        try:
+            payload = json.loads(text) if text else {}
+        except ValueError as err:
+            raise SuruApiError(
+                f"Cognito {target} -> HTTP {status}: invalid JSON: {text[:200]}"
+            ) from err
+        if status != 200:
+            err_type = (payload or {}).get("__type", "")
+            msg = (payload or {}).get("message", str(payload))
+            if any(t in err_type for t in
+                   ("NotAuthorized", "UserNotFound", "InvalidParameter")):
+                raise SuruAuthError(f"{err_type}: {msg}")
+            raise SuruApiError(f"{err_type}: {msg}")
+        return payload
 
     async def async_login(self) -> None:
         """Full SRP login -> access/refresh tokens."""
@@ -107,7 +115,7 @@ class SuruWaterApi:
 
     # -- API --------------------------------------------------------------
 
-    async def _get(self, path: str, params: dict | None = None) -> dict:
+    async def _request(self, path: str, params: dict | None) -> tuple[int, str]:
         token = await self._async_token()
         url = f"{API_BASE}/{path.lstrip('/')}"
         try:
@@ -115,15 +123,27 @@ class SuruWaterApi:
                 url, params=params,
                 headers={"Authorization": f"Bearer {token}",
                          "Accept": "application/json"},
+                timeout=_TIMEOUT,
             ) as resp:
-                if resp.status == 401:
-                    raise SuruAuthError("API returned 401 (token rejected)")
-                text = await resp.text()
-                if resp.status != 200:
-                    raise SuruApiError(f"GET {path} -> HTTP {resp.status}: {text[:200]}")
-                return json.loads(text) if text else {}
-        except aiohttp.ClientError as err:
-            raise SuruApiError(f"GET {path} failed: {err}") from err
+                return resp.status, await resp.text()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise SuruApiError(f"GET {path} failed: {err!r}") from err
+
+    async def _get(self, path: str, params: dict | None = None) -> dict:
+        status, text = await self._request(path, params)
+        if status == 401:
+            # Token rejected before its expiry: log in again once and retry
+            # before treating it as a real auth failure (-> reauth flow).
+            self._access_token = None
+            status, text = await self._request(path, params)
+            if status == 401:
+                raise SuruAuthError("API returned 401 (token rejected)")
+        if status != 200:
+            raise SuruApiError(f"GET {path} -> HTTP {status}: {text[:200]}")
+        try:
+            return json.loads(text) if text else {}
+        except ValueError as err:
+            raise SuruApiError(f"GET {path}: invalid JSON: {text[:200]}") from err
 
     async def async_get_units(self) -> list[dict]:
         data = await self._get("units")
@@ -137,12 +157,13 @@ class SuruWaterApi:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return await self._get(f"units/{unit_id}/reading", {"date": now})
 
-    async def async_get_consumption(self, unit_id: str, range_: str = "day") -> dict:
-        start = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    async def async_get_consumption(
+        self, unit_id: str, start: datetime, range_: str = "day"
+    ) -> dict:
+        """Consumption from `start` (tz-aware, e.g. local midnight) on."""
+        start_utc = start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return await self._get(
-            f"units/{unit_id}/consumption", {"range": range_, "startDate": start}
+            f"units/{unit_id}/consumption", {"range": range_, "startDate": start_utc}
         )
 
     async def async_get_incidents(

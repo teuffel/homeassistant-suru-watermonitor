@@ -17,7 +17,8 @@
     },
     "error": {
       "invalid_auth": "Ungueltige E-Mail oder Passwort",
-      "cannot_connect": "Verbindung zum SURU-Dienst fehlgeschlagen"
+      "cannot_connect": "Verbindung zum SURU-Dienst fehlgeschlagen",
+      "unknown": "Unerwarteter Fehler"
     },
     "abort": {
       "already_configured": "Dieses Konto ist bereits eingerichtet",

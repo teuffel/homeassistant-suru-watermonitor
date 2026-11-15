@@ -1,6 +1,7 @@
 """Config flow for SURU WaterMonitor."""
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -26,6 +27,8 @@ from .const import (
     MIN_SCAN_INTERVAL_MINUTES,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class SuruConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the SURU WaterMonitor config flow."""
@@ -47,6 +50,9 @@ class SuruConfigFlow(ConfigFlow, domain=DOMAIN):
             return {"base": "invalid_auth"}
         except SuruError:
             return {"base": "cannot_connect"}
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Unexpected error while validating credentials")
+            return {"base": "unknown"}
         return {}
 
     async def async_step_user(

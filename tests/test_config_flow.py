@@ -63,6 +63,19 @@ async def test_user_flow_cannot_connect(hass: HomeAssistant) -> None:
     assert result["errors"] == {"base": "cannot_connect"}
 
 
+async def test_user_flow_unknown_error(hass: HomeAssistant) -> None:
+    api = _api(login={"side_effect": RuntimeError})
+    with patch(_PATCH, return_value=api):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], USER_INPUT
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "unknown"}
+
+
 async def test_already_configured(hass: HomeAssistant) -> None:
     MockConfigEntry(
         domain=DOMAIN, unique_id="u@example.com", data=USER_INPUT
