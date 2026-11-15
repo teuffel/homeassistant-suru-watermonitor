@@ -36,10 +36,17 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                     continue
                 detail = await self.api.async_get_unit(unit_id)
                 reading = await self.api.async_get_reading(unit_id)
-                consumption = await self.api.async_get_consumption(
-                    unit_id, dt_util.start_of_local_day()
-                )
-                values = [v for v in (consumption.get("values") or []) if v is not None]
+                try:
+                    consumption = await self.api.async_get_consumption(
+                        unit_id, dt_util.start_of_local_day()
+                    )
+                    values = [
+                        v for v in (consumption.get("values") or []) if v is not None
+                    ]
+                except SuruApiError:
+                    # range=day is subscription-gated (BASIC -> HTTP 403), so
+                    # "consumption today" degrades to unknown like incidents.
+                    values = []
 
                 devices = detail.get("devices") or []
                 device_id = devices[0].get("id") if devices else None
