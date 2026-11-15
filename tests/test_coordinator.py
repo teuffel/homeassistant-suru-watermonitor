@@ -117,3 +117,51 @@ async def test_hourly_statistics_backfill_and_late_upload(
     start, total = await _last_stat(hass)
     assert start.isoformat() == "2026-01-16T08:00:00+01:00"
     assert total == 31 * 24 + 15 * 24 + 9 * 2
+
+
+async def test_hourly_statistics_failing_days(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A failing old day is skipped; a failing recent day is retried later."""
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    freezer.move_to("2026-01-10 17:30:00+01:00")
+    failing: set = set()
+
+    def values(day, range_):
+        if range_ == "year":
+            return [5] + [None] * 11 if day.year == 2026 else [None] * 12
+        if day.date() in failing:
+            raise SuruApiError("HTTP 500")
+        return [1] * 24
+
+    api = _api(values)
+    api.async_get_reading.return_value = {
+        "reading": 1.0, "measuredAt": "2026-01-10T09:13:00.000+01:00"
+    }
+    coordinator = SuruCoordinator(hass, api, timedelta(hours=1))
+    await coordinator._async_update_data()
+    start, total = await _last_stat(hass)
+    assert start.isoformat() == "2026-01-10T08:00:00+01:00"
+    assert total == 9 * 24 + 9
+
+    # Five days later, Jan 12 fails permanently: skipped, the rest is written.
+    freezer.move_to("2026-01-15 17:30:00+01:00")
+    failing = {dt_util.now().date() - timedelta(days=3)}
+    api.async_get_reading.return_value = {
+        "reading": 2.0, "measuredAt": "2026-01-15T09:13:00.000+01:00"
+    }
+    await coordinator._async_update_data()
+    start, total = await _last_stat(hass)
+    assert start.isoformat() == "2026-01-15T08:00:00+01:00"
+    assert total == 9 * 24 + 24 * 4 + 9  # Jan 10, 11, 13, 14 + Jan 15 until 09:00
+
+    # Next day, yesterday fails: nothing is written, retried on the next update.
+    freezer.move_to("2026-01-16 17:30:00+01:00")
+    failing = {dt_util.now().date() - timedelta(days=1)}
+    api.async_get_reading.return_value = {
+        "reading": 3.0, "measuredAt": "2026-01-16T09:13:00.000+01:00"
+    }
+    data = await coordinator._async_update_data()
+    assert data["1"]["reading"]["reading"] == 3.0  # the update itself succeeds
+    start, total = await _last_stat(hass)
+    assert start.isoformat() == "2026-01-15T08:00:00+01:00"

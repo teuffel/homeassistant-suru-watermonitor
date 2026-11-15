@@ -137,9 +137,11 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                 try:
                     data = await self.api.async_get_consumption(unit_id, day)
                 except SuruApiError:
-                    if rows:
-                        raise  # don't leave a hole in the stored statistics
-                    continue  # backfill: e.g. days before the meter was installed
+                    if rows and day >= today - timedelta(days=1):
+                        raise  # recent day, likely transient: retry next update
+                    # Older day (e.g. before the meter was installed): skip it
+                    # instead of stalling the statistic on it for good.
+                    continue
             # values[i] is the bucket starting i hours after (local) midnight.
             day_utc = dt_util.as_utc(day)
             hours.extend(
