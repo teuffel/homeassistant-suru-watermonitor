@@ -22,7 +22,7 @@ from homeassistant.util import dt as dt_util, slugify
 from homeassistant.util.unit_conversion import VolumeConverter
 
 from .api import SuruApiError, SuruAuthError, SuruWaterApi
-from .const import DOMAIN, HISTORY_DAYS
+from .const import BACKFILL_DAYS_PER_UPDATE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,7 +105,8 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         last measurement (`measuredAt` of the reading) are written. Each run
         rewrites everything since the day of the last stored hour and
         continues the running sum from the last stored hour before that day.
-        Without stored statistics, the last HISTORY_DAYS days are backfilled.
+        Without stored statistics, the whole history of the meter is
+        backfilled, BACKFILL_DAYS_PER_UPDATE days per run.
         """
         statistic_id = consumption_statistic_id(unit_id)
         # The row before the last stored day is always among the last 72.
@@ -115,22 +116,22 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             )
         ).get(statistic_id, [])
 
-        oldest = today - timedelta(days=HISTORY_DAYS)
-        start = oldest
         if rows:
-            last_day = dt_util.start_of_local_day(
+            start = dt_util.start_of_local_day(
                 dt_util.as_local(dt_util.utc_from_timestamp(rows[0]["start"]))
             )
-            start = max(last_day, oldest)
+        else:
+            start = await self._async_first_data_day(unit_id, today)
         base = next(
             (row["sum"] or 0.0 for row in rows if row["start"] < start.timestamp()),
             0.0,
         )
 
         hours: list[tuple[datetime, float | None]] = []
-        for back in range((today.date() - start.date()).days, -1, -1):
-            day = today - timedelta(days=back)
-            if back == 0:
+        days = min((today.date() - start.date()).days, BACKFILL_DAYS_PER_UPDATE - 1)
+        for offset in range(days + 1):
+            day = start + timedelta(days=offset)
+            if day == today:
                 data = today_consumption
             else:
                 try:
@@ -174,3 +175,24 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             ),
             statistics,
         )
+
+    async def _async_first_data_day(self, unit_id: str, today: datetime) -> datetime:
+        """Local midnight of the 1st of the earliest month with consumption.
+
+        Uses the monthly totals of range=year, going back year by year.
+        """
+        first = today
+        for year in range(today.year, today.year - 10, -1):
+            try:
+                data = await self.api.async_get_consumption(
+                    unit_id, today.replace(year=year, month=1, day=1), "year"
+                )
+            except SuruApiError:
+                break
+            months = [i for i, v in enumerate(data.get("values") or []) if v is not None]
+            if not months:
+                break
+            first = today.replace(year=year, month=months[0] + 1, day=1)
+            if months[0] > 0:
+                break  # data starts within this year
+        return first

@@ -11,7 +11,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 )
 
 from custom_components.suru_water_monitor.api import SuruApiError
-from custom_components.suru_water_monitor.const import HISTORY_DAYS
+from custom_components.suru_water_monitor.const import BACKFILL_DAYS_PER_UPDATE
 from custom_components.suru_water_monitor.coordinator import (
     SuruCoordinator,
     consumption_statistic_id,
@@ -21,7 +21,7 @@ STAT_ID = consumption_statistic_id("1")
 
 
 def _api(day_values=None) -> AsyncMock:
-    """API mock; consumption values per local date via `day_values(date)`."""
+    """API mock; consumption values via `day_values(day, range_)`."""
     api = AsyncMock()
     api.async_get_units.return_value = [{"id": "1"}]
     api.async_get_unit.return_value = {"devices": [{"id": "dev-1"}]}
@@ -30,8 +30,8 @@ def _api(day_values=None) -> AsyncMock:
     if day_values is None:
         api.async_get_consumption.return_value = {"values": [1, 2, None]}
     else:
-        api.async_get_consumption.side_effect = lambda _unit, day: {
-            "values": day_values(day.date())
+        api.async_get_consumption.side_effect = lambda _unit, day, range_="day": {
+            "values": day_values(day, range_)
         }
     return api
 
@@ -66,40 +66,54 @@ async def test_consumption_forbidden_does_not_fail_update(hass: HomeAssistant) -
 async def test_hourly_statistics_backfill_and_late_upload(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
-    """Backfill on first run, then fill in hours the meter uploads late.
+    """Backfill the whole history in chunks, then fill in late uploads.
 
     Mirrors the real API: the meter uploads once a day (here 09:13), hours
-    after that are reported as 0 until "now", later hours as None.
+    after that are reported as 0 until "now", later hours as None. Monthly
+    totals (range=year) show data from December 2025 on.
     """
     await hass.config.async_set_time_zone("Europe/Berlin")
     freezer.move_to("2026-01-15 17:30:00+01:00")
-    day1 = dt_util.now().date()
-    day2 = day1 + timedelta(days=1)
+    jan15 = dt_util.now().date()
+    jan16 = jan15 + timedelta(days=1)
+    years = {2026: [5] + [None] * 11, 2025: [None] * 11 + [5]}
+    uploads = {jan15: [1] * 10 + [0] * 8 + [None] * 6}
 
-    # Day 1: buckets 00-09 measured (09 only partly), 10-17 zero-filled.
-    uploads = {day1: [1] * 10 + [0] * 8 + [None] * 6}
-    api = _api(lambda d: uploads.get(d, [1] * 24))
+    def values(day, range_):
+        if range_ == "year":
+            return years.get(day.year, [None] * 12)
+        return uploads.get(day.date(), [1] * 24)
+
+    api = _api(values)
     api.async_get_reading.return_value = {
         "reading": 1.0, "measuredAt": "2026-01-15T09:13:00.000+01:00"
     }
     coordinator = SuruCoordinator(hass, api, timedelta(hours=1))
+
+    # Run 1: today + 2 years scanned + first chunk (Dec 1-31).
     await coordinator._async_update_data()
-
-    assert api.async_get_consumption.await_count == HISTORY_DAYS + 1
+    assert api.async_get_consumption.await_count == 1 + 2 + BACKFILL_DAYS_PER_UPDATE
     start, total = await _last_stat(hass)
-    assert start.isoformat() == "2026-01-15T08:00:00+01:00"  # last full hour
-    assert total == HISTORY_DAYS * 24 + 9
+    assert start.isoformat() == "2025-12-31T23:00:00+01:00"
+    assert total == 31 * 24
 
-    # Day 2: the upload at 09:13 completed day 1 and covers day 2 until then.
+    # Run 2: continues from Dec 31 up to today's last measurement (08:00 bucket).
+    api.async_get_consumption.reset_mock()
+    await coordinator._async_update_data()
+    assert api.async_get_consumption.await_count == 1 + 15  # today + Dec 31-Jan 14
+    start, total = await _last_stat(hass)
+    assert start.isoformat() == "2026-01-15T08:00:00+01:00"
+    assert total == 31 * 24 + 14 * 24 + 9
+
+    # Next day: the upload at 09:13 completed Jan 15 and covers Jan 16 until then.
     freezer.move_to("2026-01-16 17:30:00+01:00")
-    uploads = {day1: [1] * 24, day2: [2] * 10 + [0] * 8 + [None] * 6}
+    uploads = {jan15: [1] * 24, jan16: [2] * 10 + [0] * 8 + [None] * 6}
     api.async_get_reading.return_value = {
         "reading": 2.0, "measuredAt": "2026-01-16T09:13:00.000+01:00"
     }
     api.async_get_consumption.reset_mock()
     await coordinator._async_update_data()
-
-    assert api.async_get_consumption.await_count == 2  # today + day 1 only
+    assert api.async_get_consumption.await_count == 2  # today + Jan 15
     start, total = await _last_stat(hass)
     assert start.isoformat() == "2026-01-16T08:00:00+01:00"
-    assert total == HISTORY_DAYS * 24 + 24 + 9 * 2
+    assert total == 31 * 24 + 15 * 24 + 9 * 2

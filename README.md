@@ -26,7 +26,7 @@ Home Assistant, including the Energy dashboard.
   their data only once a day. The integration writes the hourly values from the
   SURU cloud into a long-term statistic with their real timestamps, so the
   Energy dashboard shows *when* the water was used, not when the data arrived.
-  The last 30 days are backfilled on setup.
+  The whole history of your meter is backfilled on setup.
   [Details](#energy-dashboard)
 - **Meter reading and today's consumption** as sensors
 - **Leak alarm** - the SURU pipe monitor (leak, high flow, frost/temperature,
@@ -93,7 +93,9 @@ How it works:
 - After each upload of the meter, the hourly values up to the time of the last
   measurement are written with their real timestamps. Hours after that follow
   with the next upload.
-- On first setup the last 30 days are backfilled. If the meter was offline for
+- On first setup the whole history of the meter is backfilled, one month per
+  update (with the default interval of 60 minutes, half a year of history is
+  complete after about 6 hours). If the meter was offline for
   a while, the missing hours are filled in once its data arrives.
 
 The statistic needs access to the hourly consumption data. Some accounts don't
@@ -106,9 +108,9 @@ account, but the consumption of a whole upload then shows up in the hour in
 which Home Assistant fetched it.
 
 Use only one of the two, otherwise the consumption is counted twice. When you
-switch from the meter reading to the statistic, the Energy dashboard shows the
-last 30 days (backfill) from the statistic; older history stays recorded under
-the meter reading sensor.
+switch from the meter reading to the statistic, the backfill brings the whole
+history of the meter into the Energy dashboard; the old data of the meter
+reading sensor stays recorded as well.
 
 ## How it works
 
