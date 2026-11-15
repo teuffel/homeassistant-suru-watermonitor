@@ -13,9 +13,10 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    statistics_during_period,
 )
 from homeassistant.const import UnitOfVolume
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util, slugify
@@ -44,6 +45,7 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             hass, _LOGGER, name=DOMAIN, update_interval=update_interval
         )
         self.api = api
+        self._history_checked: set[str] = set()
 
     async def _async_update_data(self) -> dict[str, dict]:
         try:
@@ -65,7 +67,9 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                 values = [
                     v for v in ((consumption or {}).get("values") or []) if v is not None
                 ]
-                if consumption is not None:
+                # During startup the recorder doesn't process writes yet; the
+                # statistics catch up on the refresh after HA has started.
+                if consumption is not None and self.hass.state is CoreState.running:
                     try:
                         await self._async_import_statistics(
                             unit_id, today, consumption, reading
@@ -115,6 +119,11 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
                 get_last_statistics, self.hass, 72, statistic_id, False, {"sum"}
             )
         ).get(statistic_id, [])
+        if rows and unit_id not in self._history_checked:
+            self._history_checked.add(unit_id)
+            if not await self._async_history_complete(unit_id, statistic_id, today):
+                await self._async_clear_statistic(statistic_id)
+                rows = []
 
         if rows:
             start = dt_util.start_of_local_day(
@@ -177,6 +186,36 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             ),
             statistics,
         )
+
+    async def _async_history_complete(
+        self, unit_id: str, statistic_id: str, today: datetime
+    ) -> bool:
+        """Whether the stored statistic reaches back to the meter's first data.
+
+        A full backfill writes rows within its first chunk after the first
+        data day; statistics from 0.2.0 (30 days only) don't.
+        """
+        first_day = await self._async_first_data_day(unit_id, today)
+        rows = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            first_day,
+            first_day + timedelta(days=BACKFILL_DAYS_PER_UPDATE),
+            {statistic_id},
+            "hour",
+            None,
+            {"sum"},
+        )
+        return bool(rows.get(statistic_id))
+
+    async def _async_clear_statistic(self, statistic_id: str) -> None:
+        """Delete a statistic and wait until the recorder has done it."""
+        done = self.hass.loop.create_future()
+        get_instance(self.hass).async_clear_statistics(
+            [statistic_id],
+            on_done=lambda: self.hass.loop.call_soon_threadsafe(done.set_result, None),
+        )
+        await done
 
     async def _async_first_data_day(self, unit_id: str, today: datetime) -> datetime:
         """Local midnight of the 1st of the earliest month with consumption.

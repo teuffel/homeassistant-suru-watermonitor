@@ -3,15 +3,26 @@ from datetime import timedelta
 from unittest.mock import AsyncMock
 
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.components.recorder.statistics import get_last_statistics
-from homeassistant.core import HomeAssistant
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    get_last_statistics,
+)
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
 
 from custom_components.suru_water_monitor.api import SuruApiError
-from custom_components.suru_water_monitor.const import BACKFILL_DAYS_PER_UPDATE
+from custom_components.suru_water_monitor.const import (
+    BACKFILL_DAYS_PER_UPDATE,
+    DOMAIN,
+)
 from custom_components.suru_water_monitor.coordinator import (
     SuruCoordinator,
     consumption_statistic_id,
@@ -100,7 +111,8 @@ async def test_hourly_statistics_backfill_and_late_upload(
     # Run 2: continues from Dec 31 up to today's last measurement (08:00 bucket).
     api.async_get_consumption.reset_mock()
     await coordinator._async_update_data()
-    assert api.async_get_consumption.await_count == 1 + 15  # today + Dec 31-Jan 14
+    # today + history check (2 years, once per start) + Dec 31-Jan 14
+    assert api.async_get_consumption.await_count == 1 + 2 + 15
     start, total = await _last_stat(hass)
     assert start.isoformat() == "2026-01-15T08:00:00+01:00"
     assert total == 31 * 24 + 14 * 24 + 9
@@ -165,3 +177,55 @@ async def test_hourly_statistics_failing_days(
     assert data["1"]["reading"]["reading"] == 3.0  # the update itself succeeds
     start, total = await _last_stat(hass)
     assert start.isoformat() == "2026-01-15T08:00:00+01:00"
+
+
+async def test_short_history_from_020_is_rebuilt(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Statistics that don't reach back to the first data (0.2.0) are rebuilt."""
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    freezer.move_to("2026-01-15 17:30:00+01:00")
+    years = {2026: [5] + [None] * 11, 2025: [None] * 11 + [5]}  # data from Dec
+
+    def values(day, range_):
+        if range_ == "year":
+            return years.get(day.year, [None] * 12)
+        return [1] * 24
+
+    # A 0.2.0-style statistic starting on Jan 10 with an unrelated sum.
+    async_add_external_statistics(
+        hass,
+        StatisticMetaData(
+            mean_type=StatisticMeanType.NONE, has_sum=True, name=None,
+            source=DOMAIN, statistic_id=STAT_ID, unit_class="volume",
+            unit_of_measurement="L",
+        ),
+        [
+            StatisticData(start=dt_util.as_utc(dt_util.parse_datetime(
+                f"2026-01-{day}T00:00:00+01:00")), sum=1000.0 + int(day))
+            for day in ("10", "11")
+        ],
+    )
+    await async_wait_recording_done(hass)
+
+    api = _api(values)
+    api.async_get_reading.return_value = {
+        "reading": 1.0, "measuredAt": "2026-01-15T09:13:00.000+01:00"
+    }
+    coordinator = SuruCoordinator(hass, api, timedelta(hours=1))
+    await coordinator._async_update_data()
+
+    # Cleared and rebuilt from Dec 1 (first chunk: Dec 1-31).
+    start, total = await _last_stat(hass)
+    assert start.isoformat() == "2025-12-31T23:00:00+01:00"
+    assert total == 31 * 24
+
+
+async def test_no_statistics_during_startup(hass: HomeAssistant) -> None:
+    """The recorder doesn't write before HA has started: skip, don't block."""
+    hass.set_state(CoreState.starting)
+    api = _api(lambda day, range_: [1] * 24)
+    coordinator = SuruCoordinator(hass, api, timedelta(hours=1))
+    data = await coordinator._async_update_data()
+    assert data["1"]["consumption_today_l"] == 24.0
+    assert api.async_get_consumption.await_count == 1  # today only, no backfill
