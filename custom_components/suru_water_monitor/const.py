@@ -17,6 +17,6 @@ DEFAULT_SCAN_INTERVAL_MINUTES = 60
 MIN_SCAN_INTERVAL_MINUTES = 5
 MAX_SCAN_INTERVAL_MINUTES = 1440
 
-# The whole history is backfilled into the statistics, this many days (= API
-# calls) per update so setup stays fast.
-BACKFILL_DAYS_PER_UPDATE = 31
+# The whole history is backfilled into the statistics (after HA has started),
+# at most this many days (= API calls) per update.
+BACKFILL_DAYS_PER_UPDATE = 366

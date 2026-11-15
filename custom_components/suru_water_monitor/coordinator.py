@@ -192,15 +192,15 @@ class SuruCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     ) -> bool:
         """Whether the stored statistic reaches back to the meter's first data.
 
-        A full backfill writes rows within its first chunk after the first
-        data day; statistics from 0.2.0 (30 days only) don't.
+        A full backfill writes rows from the first data day on; statistics
+        from 0.2.0 (30 days only) have none within the month after it.
         """
         first_day = await self._async_first_data_day(unit_id, today)
         rows = await get_instance(self.hass).async_add_executor_job(
             statistics_during_period,
             self.hass,
             first_day,
-            first_day + timedelta(days=BACKFILL_DAYS_PER_UPDATE),
+            first_day + timedelta(days=31),
             {statistic_id},
             "hour",
             None,

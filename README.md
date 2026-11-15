@@ -93,9 +93,9 @@ How it works:
 - After each upload of the meter, the hourly values up to the time of the last
   measurement are written with their real timestamps. Hours after that follow
   with the next upload.
-- On first setup the whole history of the meter is backfilled, one month per
-  update (with the default interval of 60 minutes, half a year of history is
-  complete after about 6 hours). If the meter was offline for
+- Right after setup (or after Home Assistant has started) the whole history of
+  the meter is backfilled in one go (up to a year per update, one request per
+  day). If the meter was offline for
   a while, the missing hours are filled in once its data arrives.
 
 The statistic needs access to the hourly consumption data. Some accounts don't
